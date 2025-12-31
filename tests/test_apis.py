@@ -539,6 +539,101 @@ def test_completions_date_range_validation(
 
 
 # ============================================================================
+# Admin API Tests
+# ============================================================================
+
+
+@pytest.fixture
+async def admin_user(client: TestClient):
+    """Create and return an admin user."""
+    from beaverhabits.configs import settings
+
+    email = f"admin_{datetime.now().timestamp()}@test.com"
+    # Patch settings.ADMIN_EMAIL to match this user
+    original_admin_email = settings.ADMIN_EMAIL
+    settings.ADMIN_EMAIL = email
+
+    response = client.post(
+        "/auth/register",
+        json={"email": email, "password": PASSWORD},
+    )
+    assert response.status_code == 201
+    user_data = response.json()
+    user = User(**user_data)
+
+    yield user
+
+    # Cleanup
+    settings.ADMIN_EMAIL = original_admin_email
+
+
+@pytest.fixture
+async def admin_headers(admin_user: User, client: TestClient):
+    """Get authorization headers for admin user."""
+    response = client.post(
+        "/auth/login",
+        data={
+            "grant_type": "password",
+            "username": admin_user.email,
+            "password": PASSWORD,
+        },
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+    return {
+        "Authorization": f"Bearer {token}",
+        "accept": "application/json",
+    }
+
+
+async def test_admin_create_user(admin_headers, client: TestClient):
+    """Test that admin can create a new user via API."""
+    new_user_email = f"newuser_{datetime.now().timestamp()}@test.com"
+    response = client.post(
+        "/api/v1/admin/users",
+        json={"email": new_user_email, "password": PASSWORD},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["email"] == new_user_email
+    assert "id" in data
+
+
+async def test_admin_create_user_duplicate_email(admin_headers, client: TestClient):
+    """Test that creating a user with existing email fails."""
+    email = f"duplicate_{datetime.now().timestamp()}@test.com"
+
+    # Create first user
+    response1 = client.post(
+        "/api/v1/admin/users",
+        json={"email": email, "password": PASSWORD},
+        headers=admin_headers,
+    )
+    assert response1.status_code == 200
+
+    # Try to create duplicate
+    response2 = client.post(
+        "/api/v1/admin/users",
+        json={"email": email, "password": PASSWORD},
+        headers=admin_headers,
+    )
+    assert response2.status_code == 400
+
+
+async def test_non_admin_cannot_create_user(auth_headers, client: TestClient):
+    """Test that non-admin users cannot create users."""
+    response = client.post(
+        "/api/v1/admin/users",
+        json={"email": "should_fail@test.com", "password": PASSWORD},
+        headers=auth_headers,
+    )
+    assert response.status_code == 401
+
+
+# ============================================================================
 # Additional Edge Cases
 # ============================================================================
 
