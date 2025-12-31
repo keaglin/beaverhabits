@@ -3,11 +3,12 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 
 from beaverhabits import views
+from beaverhabits.app.auth import user_create
 from beaverhabits.app.db import User
-from beaverhabits.app.dependencies import current_active_user
+from beaverhabits.app.dependencies import current_active_user, current_admin_user
 from beaverhabits.core.completions import CStatus, get_habit_date_completion
 from beaverhabits.storage.storage import (
     Habit,
@@ -222,6 +223,35 @@ def format_json_response(habit: Habit) -> dict:
         "period": habit.period,
         "tags": habit.tags,
     }
+
+
+class CreateUser(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserResponse(BaseModel):
+    id: str
+    email: EmailStr
+
+
+@api_router.post(
+    "/admin/users", tags=["admin"], status_code=201, response_model=UserResponse
+)
+async def create_user_endpoint(
+    body: CreateUser,
+    admin: User = Depends(current_admin_user),
+):
+    """Create a new user. Requires admin privileges (ADMIN_EMAIL env var)."""
+    try:
+        user = await user_create(email=body.email, password=body.password)
+        logger.info(f"Admin {admin.email} created user {user.email}")
+        return UserResponse(id=str(user.id), email=user.email)
+    except Exception as e:
+        if "already exists" in str(e).lower():
+            raise HTTPException(status_code=409, detail="User already exists")
+        logger.exception(f"Unexpected error creating user: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def init_api_routes(app: FastAPI) -> None:
