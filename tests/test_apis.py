@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 from loguru import logger
 from nicegui import core
 
+from beaverhabits.app.auth import user_create
 from beaverhabits.app.db import User, engine
+from beaverhabits.configs import settings
 from beaverhabits.main import app
 
 PASSWORD = "TestPassword123!"
@@ -31,16 +33,11 @@ async def client_fixture():
 
 @pytest.fixture
 async def test_user(client: TestClient):
-    """Set up the database before tests and tear down after."""
-    logger.info("Registering test user...")
+    """Create a test user directly (bypassing API auth requirements)."""
+    logger.info("Creating test user...")
     email = f"testuser_{datetime.now().timestamp()}@test.com"
-    response = client.post(
-        "/auth/register",
-        json={"email": email, "password": PASSWORD},
-    )
-    assert response.status_code == 201
-    user_data = response.json()
-    user = User(**user_data)
+    user = await user_create(email=email, password=PASSWORD)
+    logger.info(f"Created test user: {user.email}")
 
     yield user
 
@@ -97,15 +94,14 @@ async def sample_habit(auth_headers, client: TestClient):
 # ============================================================================
 
 
-async def test_create_user(client: TestClient):
-    """Test user registration."""
+async def test_register_requires_admin_auth(client: TestClient):
+    """Test that /auth/register requires admin authentication."""
     email = f"newuser_{datetime.now().timestamp()}@test.com"
     data = {"email": email, "password": PASSWORD}
-    response = client.post("/auth/register", json=data)
 
-    assert response.status_code == 201
-    assert response.json()["email"] == email
-    assert response.json()["is_active"] == True
+    # Without auth, should fail
+    response = client.post("/auth/register", json=data)
+    assert response.status_code == 401
 
 
 async def test_obtain_access_token(test_user, client: TestClient):
@@ -539,27 +535,19 @@ def test_completions_date_range_validation(
 
 
 # ============================================================================
-# Admin API Tests
+# Admin Registration Tests
 # ============================================================================
 
 
 @pytest.fixture
 async def admin_user(client: TestClient):
-    """Create and return an admin user."""
-    from beaverhabits.configs import settings
-
+    """Create and return an admin user directly."""
     email = f"admin_{datetime.now().timestamp()}@test.com"
     # Patch settings.ADMIN_EMAIL to match this user
     original_admin_email = settings.ADMIN_EMAIL
     settings.ADMIN_EMAIL = email
 
-    response = client.post(
-        "/auth/register",
-        json={"email": email, "password": PASSWORD},
-    )
-    assert response.status_code == 201
-    user_data = response.json()
-    user = User(**user_data)
+    user = await user_create(email=email, password=PASSWORD)
 
     yield user
 
@@ -587,46 +575,46 @@ async def admin_headers(admin_user: User, client: TestClient):
     }
 
 
-async def test_admin_create_user(admin_headers, client: TestClient):
-    """Test that admin can create a new user via API."""
+async def test_admin_can_register_user(admin_headers, client: TestClient):
+    """Test that admin can register a new user via /auth/register."""
     new_user_email = f"newuser_{datetime.now().timestamp()}@test.com"
     response = client.post(
-        "/api/v1/admin/users",
+        "/auth/register",
         json={"email": new_user_email, "password": PASSWORD},
         headers=admin_headers,
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 201
     data = response.json()
     assert data["email"] == new_user_email
-    assert "id" in data
+    assert data["is_active"] == True
 
 
-async def test_admin_create_user_duplicate_email(admin_headers, client: TestClient):
-    """Test that creating a user with existing email fails."""
+async def test_admin_register_duplicate_email_fails(admin_headers, client: TestClient):
+    """Test that registering a user with existing email fails."""
     email = f"duplicate_{datetime.now().timestamp()}@test.com"
 
     # Create first user
     response1 = client.post(
-        "/api/v1/admin/users",
+        "/auth/register",
         json={"email": email, "password": PASSWORD},
         headers=admin_headers,
     )
-    assert response1.status_code == 200
+    assert response1.status_code == 201
 
     # Try to create duplicate
     response2 = client.post(
-        "/api/v1/admin/users",
+        "/auth/register",
         json={"email": email, "password": PASSWORD},
         headers=admin_headers,
     )
     assert response2.status_code == 400
 
 
-async def test_non_admin_cannot_create_user(auth_headers, client: TestClient):
-    """Test that non-admin users cannot create users."""
+async def test_non_admin_cannot_register_user(auth_headers, client: TestClient):
+    """Test that non-admin users cannot register new users."""
     response = client.post(
-        "/api/v1/admin/users",
+        "/auth/register",
         json={"email": "should_fail@test.com", "password": PASSWORD},
         headers=auth_headers,
     )
